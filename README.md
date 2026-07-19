@@ -966,6 +966,8 @@ docker run -d \
   -p 9999:8080 \
   -p 7777:7777 \
   -p 9464:9464 \
+  -p 2222:22 \
+  -p 6666:6666 \
   -e SESSION_SECRET=hardcoded-docker-secret-key \
   -e DATABASE_URL=sqlite:///app/instance/gocortexbrokenbank.db \
   -e FLASK_ENV=production \
@@ -976,6 +978,8 @@ docker run -d \
 # Tomcat/Java exploits available at http://localhost:9999
 # SpaceATM Terminal (Next.js) available at http://localhost:7777
 # OTel metrics scrape at http://localhost:9464/metrics
+# SSH (leaked deployment key or weak root password) at localhost:2222
+# Live Transaction Ticker (WebSocket) at ws://localhost:6666
 ```
 
 #### Option 3: Docker Deployment (Build from Source)
@@ -990,15 +994,19 @@ docker-compose up --build -d
 # Tomcat/Java exploits available at http://localhost:9999
 # SpaceATM Terminal (Next.js) available at http://localhost:7777
 # OTel metrics scrape at http://localhost:9464/metrics
+# SSH (leaked deployment key or weak root password) at localhost:2222
+# Live Transaction Ticker (WebSocket) at ws://localhost:6666
 ```
 
 #### Option 4: Direct Docker Build
 ```bash
-# Build and run container (exposes Flask:8888, Tomcat:9999, SpaceATM:7777, metrics:9464)
+# Build and run container (exposes Flask:8888, Tomcat:9999, SpaceATM:7777, metrics:9464, SSH:2222, Ticker:6666)
 docker build -t gocortex-broken-bank .
-docker run -d -p 8888:8888 -p 9999:8080 -p 7777:7777 -p 9464:9464 --name gocortex-broken-bank gocortex-broken-bank
+docker run -d -p 8888:8888 -p 9999:8080 -p 7777:7777 -p 9464:9464 -p 2222:22 -p 6666:6666 --name gocortex-broken-bank gocortex-broken-bank
 
 # OTel metrics scrape at http://localhost:9464/metrics
+# SSH (leaked deployment key or weak root password) at localhost:2222
+# Live Transaction Ticker (WebSocket) at ws://localhost:6666
 ```
 
 #### Option 5: Manual Gunicorn
