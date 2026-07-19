@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # GoCortex Broken Bank - Log Shipping Module
-# Version: 1.5.0
+# Version: 1.6.0
 #
 # This module provides HTTP POST-based log shipping to external SIEM platforms.
 # Supports multiple log types: tomcat_access, netbank_application, netbank_auth
@@ -284,6 +284,8 @@ def log_concierge_event(event_type, request_obj, *, session_id, turn_id,
       - "prompt"          : inbound user prompt to /concierge/chat
       - "response"        : Concierge model output for /concierge/chat
       - "context_loaded"  : indirect-injection sink fired (URL or text upload)
+      - "agent_command"   : /concierge/agent executed the model's suggested
+                            shell command with no validation (LLM08)
 
     The two chat events share a turn_id so a prompt-injection ruleset in XSIAM
     can correlate the user's payload with the model's leaked output. The
@@ -362,6 +364,15 @@ VULNERABILITY_MAPPING = {
     "/comment": "CROSS_SITE_SCRIPTING",
     "/ldap": "LDAP_INJECTION",
     "/deserialize": "INSECURE_DESERIALIZATION",
+    "/account/restore_preferences": "INSECURE_DESERIALIZATION",
+    "/business/notifications/preview": "TEMPLATE_INJECTION",
+    "/admin/logs/retention": "LOG_TAMPERING",
+    "/admin/tasks/schedule": "CRON_PERSISTENCE",
+    "/api/vault/secrets": "MISSING_AUTHENTICATION",
+    "/api/auth/refresh": "JWT_KID_INJECTION",
+    "/admin/plugins/install": "SUPPLY_CHAIN_DEPENDENCY_CONFUSION",
+    "/latest/meta-data/iam/security-credentials": "CLOUD_METADATA_CREDENTIAL_THEFT",
+    "/graphql": "GRAPHQL_INJECTION",
     "/fetch": "SERVER_SIDE_REQUEST_FORGERY",
     "/xml": "XML_EXTERNAL_ENTITY",
     "/redirect": "HTTP_HEADER_INJECTION",

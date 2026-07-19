@@ -23,6 +23,7 @@ RUN apt-get update && \
         vim \
         sudo \
         ssh \
+        cron \
         telnet \
         netcat-openbsd \
         iputils-ping \
@@ -57,14 +58,18 @@ COPY config/tomcat-users.xml /opt/tomcat/conf/tomcat-users.xml
 COPY config/context.xml /opt/tomcat/conf/context.xml
 COPY config/manager-context.xml /opt/tomcat/webapps/manager/META-INF/context.xml
 COPY config/manager-context.xml /opt/tomcat/webapps/host-manager/META-INF/context.xml
+COPY config/tomcat-setenv.sh /opt/tomcat/bin/setenv.sh
 RUN chmod 644 /opt/tomcat/conf/tomcat-users.xml && \
     chmod 644 /opt/tomcat/conf/context.xml && \
     chmod 644 /opt/tomcat/webapps/manager/META-INF/context.xml && \
-    chmod 644 /opt/tomcat/webapps/host-manager/META-INF/context.xml
+    chmod 644 /opt/tomcat/webapps/host-manager/META-INF/context.xml && \
+    chmod +x /opt/tomcat/bin/setenv.sh
 
 # Exposing application ports (8888 for Flask/Gunicorn, 8080 for Tomcat - mapped to 9999 externally)
 # 9464 is the OTel default Prometheus scrape port (poll-based metrics)
-EXPOSE 8888 8080 7777 9464
+# 22 is sshd, genuinely reachable via the leaked deployment key or the weak root password
+# 6666 is the Live Transaction Ticker (WebSocket)
+EXPOSE 8888 8080 7777 9464 22 6666
 
 # Adding secrets directly in Dockerfile (bad practice)
 ENV SECRET_KEY="hardcoded-secret-12345"
@@ -86,12 +91,45 @@ WORKDIR /app
 # Copying application code first
 COPY . .
 
+# Generate a real SSH keypair for the "leaked deployment key" story: the
+# private half is planted at the exposed git-repo path so an attacker who
+# reads it can genuinely authenticate; the public half is pre-trusted for
+# root login, simulating an ops team that reused a deployment key as a
+# root credential. Also set a weak root password so SSH offers both a
+# leaked-key login path and a classic weak-password brute-force path.
+RUN mkdir -p /root/.ssh && \
+    mkdir -p data/projects/mars-banking-initiative/.ssh && \
+    rm -f data/projects/mars-banking-initiative/.ssh/id_rsa \
+          data/projects/mars-banking-initiative/.ssh/id_rsa.pub && \
+    ssh-keygen -t rsa -b 2048 -N "" -C "ares-deploy@gocortex.io" \
+        -f data/projects/mars-banking-initiative/.ssh/id_rsa && \
+    cat data/projects/mars-banking-initiative/.ssh/id_rsa.pub >> /root/.ssh/authorized_keys && \
+    chmod 700 /root/.ssh && \
+    chmod 600 /root/.ssh/authorized_keys && \
+    chmod 600 data/projects/mars-banking-initiative/.ssh/id_rsa && \
+    chmod 644 data/projects/mars-banking-initiative/.ssh/id_rsa.pub && \
+    echo "root:admin123" | chpasswd
+
+# Enable and configure sshd (openssh-server ships in the "ssh" metapackage
+# installed above) so the leaked key and the weak root password are both
+# genuinely usable login paths, not just artefacts on disk.
+COPY config/sshd_brokenbank.conf /etc/ssh/sshd_config.d/99-brokenbank.conf
+RUN ssh-keygen -A
+
 # Build SpaceATM Terminal (React/Next.js on port 7777)
 WORKDIR /app/react-app
 RUN npm install && \
     node scripts/patch-react-server-dom.js && \
     node scripts/patch-csrf-origin-check.js && \
     npm run build
+
+# Install the Live Transaction Ticker service (WebSocket, port 6666).
+# Pinned to ws 8.17.0 - vulnerable to CVE-2024-37890 (DoS via many HTTP
+# headers on the handshake) - not just an application-level misconfiguration.
+WORKDIR /app/ticker-service
+RUN npm install
+
+WORKDIR /app
 
 # Installing Python packages with vulnerable/older versions for security testing
 RUN pip install --no-cache-dir \
@@ -112,6 +150,9 @@ RUN pip install --no-cache-dir \
     pillow==8.1.0 \
     sqlalchemy==1.4.23 \
     faker==18.13.0 \
+    graphql-core==2.3.2 \
+    graphene==2.1.9 \
+    flask-graphql==2.0.1 \
     opentelemetry-sdk==1.41.0 \
     opentelemetry-exporter-prometheus==0.62b0 \
     prometheus-client==0.20.0 \
@@ -181,26 +222,38 @@ RUN pip install --no-cache-dir \
     pygremlinbox-unlicense==1.4.6 \
     pygremlinbox-wxwindows==1.4.6
 
-# Install the prebuilt llama-cpp-python wheel from PyPI. The wheel
-# statically compiles GGML with AVX/AVX2/F16C/FMA enabled, which is fast
-# on Haswell-or-later hosts but SIGILLs the gunicorn worker on older
-# CPUs that do not expose those flags. The runtime CPU-feature guard in
-# chatbot/concierge.py disables the Concierge entirely on such hosts so
-# the import that would crash never runs. See the internal Concierge
-# build notes for the rationale and the operator verification log.
+# Install llama-cpp-python for whichever architecture the image is being
+# built for. On x86_64 the prebuilt PyPI wheel statically compiles GGML
+# with AVX/AVX2/F16C/FMA enabled, which is fast on Haswell-or-later hosts
+# but SIGILLs the gunicorn worker on older CPUs that do not expose those
+# flags; the runtime CPU-feature guard in chatbot/concierge.py disables the
+# Concierge entirely on such hosts so the import that would crash never
+# runs. On aarch64 (Apple Silicon / ARM cloud) the pinned version may not
+# publish a prebuilt PyPI wheel, so we install the build toolchain first,
+# let pip use a wheel when one exists or otherwise compile the NEON build
+# from source, then purge the toolchain in the same layer to keep the image
+# small. See the internal Concierge build notes for the rationale.
 #
-# The 3-attempt retry loop and extended pip timeouts cover transient
-# PyPI fetch failures that have been observed during image builds. The
-# in-layer import probe fails the build fast if the wheel does not
-# unpack correctly on the AVX2-capable CI runner.
-RUN for i in 1 2 3; do \
+# The 3-attempt retry loop and extended pip timeouts cover transient PyPI
+# fetch failures that have been observed during image builds. The in-layer
+# import probe fails the build fast if the module does not import correctly.
+RUN ARCH="$(uname -m)"; \
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends build-essential cmake && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    for i in 1 2 3; do \
         pip install --no-cache-dir \
             --timeout 300 \
             --retries 5 \
             llama-cpp-python==0.3.5 \
         && break || { if [ "$i" -eq 3 ]; then echo "llama-cpp-python install failed after 3 attempts"; exit 1; fi; echo "llama-cpp-python install attempt $i failed, retrying in 10s..."; sleep 10; }; \
     done && \
-    python -c "from llama_cpp import Llama; print('llama_cpp import ok')"
+    python -c "from llama_cpp import Llama; print('llama_cpp import ok')" && \
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+        apt-get purge -y --auto-remove build-essential cmake || true; \
+    fi
 
 # Bake the SmolLM2-135M-Instruct GGUF Q4_K_M weights into the image so the
 # Mars Banking Initiative Concierge can run inference without network access

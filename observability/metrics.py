@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # GoCortex Broken Bank - OTel Poll-Based Metrics
-# Version: 1.5.0
+# Version: 1.6.0
 #
 # Exposes a Prometheus scrape endpoint on port 9464 (OTel default).
 # No tracing. No push exporters. Collector polls this endpoint.
@@ -41,7 +41,7 @@ def init_metrics(port=9464):
 
     reader = PrometheusMetricReader()
     provider = MeterProvider(metric_readers=[reader])
-    meter = provider.get_meter("brokenbank", "1.5.0")
+    meter = provider.get_meter("brokenbank", "1.6.0")
 
     # Auth traffic generator counters
     auth_events = meter.create_counter(

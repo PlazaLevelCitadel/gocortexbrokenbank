@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import re
 import threading
 from pathlib import Path
@@ -43,31 +44,61 @@ _FORCE_FAST_LEAK = os.environ.get(
     "CONCIERGE_FORCE_FAST_LEAK", ""
 ).strip().lower() in ("1", "true", "yes", "on")
 
-# Runtime CPU-feature guard. The prebuilt llama-cpp-python wheel statically
-# compiles GGML's hot kernels with AVX2/F16C/FMA enabled and dies with SIGILL
-# inside the dlopen of libllama.so on hosts missing any of those flags
-# (older bare metal, Proxmox/ESXi compatibility CPU profiles, qemu-user on
-# ARM). We read /proc/cpuinfo once at import time, before anyone tries to
-# import llama_cpp, and if the required set is incomplete we mark the
-# Concierge disabled. _try_load_model() and start_warmup() then become
-# no-ops, generate() short-circuits to a polite "disabled" message, and
-# the route layer renders a banner plus disabled buttons. The validator
-# fast-path env flag CONCIERGE_FORCE_FAST_LEAK forces this guard off so CI
-# (which always runs on AVX2-capable hardware) keeps passing regardless of
-# what /proc/cpuinfo would say if the validator were ever pointed at an
-# older host.
-_REQUIRED_CPU_FLAGS = ("avx2", "f16c", "fma")
-_DISABLED_MESSAGE = (
-    "Sorry, this host's CPU is missing AVX2/F16C/FMA so the Concierge "
-    "has disabled itself to avoid extreme latency."
-)
+# Runtime CPU-feature guard. The llama-cpp-python wheel statically compiles
+# GGML's hot kernels for a fixed instruction-set baseline and dies with
+# SIGILL inside the dlopen of libllama.so on a host whose CPU does not
+# expose that baseline. The required baseline depends on the architecture:
+#
+#   x86_64  - the prebuilt PyPI wheel is built with AVX2/F16C/FMA on, so it
+#             SIGILLs on pre-Haswell bare metal, Proxmox/ESXi compatibility
+#             CPU profiles, and other hosts that mask those flags.
+#   aarch64 - the ARM64 wheel is built for the ARMv8-A NEON baseline, which
+#             every ARMv8 CPU has. NEON shows up as "asimd" in the ARM
+#             /proc/cpuinfo "Features" line. So a real Apple Silicon or ARM
+#             cloud host running an aarch64 container is always capable.
+#
+# We read /proc/cpuinfo once at import time, before anyone tries to import
+# llama_cpp, and if the architecture's required set is incomplete (or the
+# architecture is one we do not ship a wheel for) we mark the Concierge
+# disabled. _try_load_model() and start_warmup() then become no-ops,
+# generate() short-circuits to a polite "disabled" message, and the route
+# layer renders a banner plus disabled buttons. The validator fast-path env
+# flag CONCIERGE_FORCE_FAST_LEAK forces this guard off so CI (which always
+# runs on capable hardware) keeps passing regardless of what /proc/cpuinfo
+# would say if the validator were ever pointed at an older host.
+_MACHINE = platform.machine().lower()
+_IS_ARM64 = _MACHINE in ("aarch64", "arm64")
+_IS_X86_64 = _MACHINE in ("x86_64", "amd64")
+
+_REQUIRED_X86_FLAGS = ("avx2", "f16c", "fma")
+_REQUIRED_ARM64_FLAGS = ("asimd",)
+
+if _IS_ARM64:
+    _DISABLED_MESSAGE = (
+        "Sorry, this host's CPU is missing the ARM NEON (asimd) baseline "
+        "so the Concierge has disabled itself."
+    )
+elif _IS_X86_64:
+    _DISABLED_MESSAGE = (
+        "Sorry, this host's CPU is missing AVX2/F16C/FMA so the Concierge "
+        "has disabled itself to avoid extreme latency."
+    )
+else:
+    _DISABLED_MESSAGE = (
+        "Sorry, this host's CPU architecture (" + (_MACHINE or "unknown") +
+        ") is unsupported so the Concierge has disabled itself."
+    )
 
 
 def _probe_cpu_flags() -> set[str]:
     try:
         with open("/proc/cpuinfo", "r") as fh:
             for line in fh:
-                if line.startswith("flags"):
+                # x86 lists capabilities on a "flags" line; ARM uses
+                # "Features". Match case-insensitively for cross-kernel
+                # compatibility and return the first one we find.
+                lowered = line.lower()
+                if lowered.startswith("flags") or lowered.startswith("features"):
                     _, _, rest = line.partition(":")
                     return set(rest.strip().split())
     except OSError:
@@ -78,8 +109,14 @@ def _probe_cpu_flags() -> set[str]:
 def _compute_disabled() -> Tuple[bool, str]:
     if _FORCE_FAST_LEAK:
         return False, ""
+    if _IS_ARM64:
+        required = _REQUIRED_ARM64_FLAGS
+    elif _IS_X86_64:
+        required = _REQUIRED_X86_FLAGS
+    else:
+        return True, "unsupported CPU architecture " + (_MACHINE or "unknown")
     flags = _probe_cpu_flags()
-    missing = [f for f in _REQUIRED_CPU_FLAGS if f not in flags]
+    missing = [f for f in required if f not in flags]
     if missing:
         return True, "host CPU lacks " + ",".join(missing)
     return False, ""

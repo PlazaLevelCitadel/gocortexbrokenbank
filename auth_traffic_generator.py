@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # GoCortex Broken Bank - Background Authentication Traffic Generator
-# Version: 1.5.0
+# Version: 1.6.0
 #
 # This module generates simulated authentication traffic for SIEM testing.
 # It produces realistic-looking login events with seeded anomalies for demo purposes.
