@@ -1,4 +1,4 @@
-name: Deploy to EKS
+name: Build and Push to EKS and ECR
 on:
   push:
     tags:
