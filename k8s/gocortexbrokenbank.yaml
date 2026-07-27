@@ -12,11 +12,6 @@
 #   kubectl get pods -n gocortexbrokenbank
 #   kubectl logs -f deployment/gocortexbrokenbank -n gocortexbrokenbank
 
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: gocortexbrokenbank
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
