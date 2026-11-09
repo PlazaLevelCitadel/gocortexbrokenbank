@@ -44,7 +44,7 @@
 concierge:
   # local | portkey | openrouter
   # Override at runtime without editing this file via CONCIERGE_PROVIDER.
-  provider: "local"
+  provider: "persona"
 
   # How much system prompt this application supplies with each request.
   # Override at runtime via CONCIERGE_SYSTEM_PROMPT.
